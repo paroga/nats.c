@@ -334,8 +334,6 @@ natsConn_bufferWrite(natsConnection *nc, const char *buffer, int len)
         {
             // Do a single socket write to avoid a copy
             s = natsSock_WriteFully(&(nc->sockCtx), buffer + offset, len);
-            if (s != NATS_OK)
-                natsBuf_Append(nc->bw, buffer + offset, len);
 
             // We are done
             return NATS_UPDATE_ERR_STACK(s);
@@ -395,19 +393,9 @@ _createConn(natsConnection *nc)
 
     s = natsSock_ConnectTcp(&(nc->sockCtx), nc->cur->url->host, nc->cur->url->port);
     if (s == NATS_OK)
-    {
         nc->sockCtx.fdActive = true;
 
-        if ((nc->pending != NULL) && (nc->bw != NULL)
-            && (natsBuf_Len(nc->bw) > 0))
-        {
-            // Move to pending buffer
-            s = natsConn_bufferWrite(nc, natsBuf_Data(nc->bw),
-                                     natsBuf_Len(nc->bw));
-        }
-    }
-
-    // Need to create the buffer even on failure in case we allow
+    // Need to create or reset the buffer even on failure in case we allow
     // retry on failed connect
     if ((s == NATS_OK) || nc->opts->retryOnFailedConnect)
     {
@@ -1136,8 +1124,14 @@ _flushReconnectPendingItems(natsConnection *nc)
 
     if (natsBuf_Len(nc->pending) > 0)
     {
-        s = natsBuf_Append(nc->bw, natsBuf_Data(nc->pending),
-                           natsBuf_Len(nc->pending));
+        // Flush pending buffer
+        s = natsConn_bufferWrite(nc, natsBuf_Data(nc->pending),
+                                 natsBuf_Len(nc->pending));
+
+        // Regardless of outcome, we must clear the pending buffer
+        // here to avoid duplicates (if the flush were to fail
+        // with some messages/partial messages being sent).
+        natsBuf_Reset(nc->pending);
     }
 
     return s;
